@@ -9,7 +9,9 @@ async function startScan() {
         return;
     }
 
-    document.getElementById("output").innerHTML = `<p>🔍 Scanning ${target}...</p>`;
+    let outputDiv = document.getElementById("output");
+    outputDiv.style.display = "block"; // Show output box
+    outputDiv.innerHTML = `<p>🔍 Scanning ${target}...</p>`;
 
     try {
         let response = await fetch("/scan", {
@@ -21,16 +23,16 @@ async function startScan() {
         let result = await response.json();
         scanResults = result; // Store results for export
 
-        let outputDiv = document.getElementById("output");
-        outputDiv.innerHTML = `<p><strong>IP:</strong> ${result.ip}</p>`;
-
+        let ip = result.ip || "Unknown";
         let geo = result.geolocation || {};
         let location = `${geo.city || 'Unknown'}, ${geo.region || 'Unknown'}, ${geo.country || 'Unknown'}`;
-        outputDiv.innerHTML += `<p><strong>Location:</strong> ${location}</p>`;
-
-        let osDetectionDiv = document.getElementById("os-detection");
         let detectedOS = result.os || "Unknown";
-        osDetectionDiv.innerHTML = `🖥️ <strong>Detected OS:</strong> ${detectedOS}`;
+
+        outputDiv.innerHTML = `
+            <p><strong>IP:</strong> ${ip}</p>
+            <p><strong>Location:</strong> ${location}</p>
+            <p>🖥️ <strong>Detected OS:</strong> ${detectedOS}</p>
+        `;
 
         if (!result.results || result.results.length === 0) {
             outputDiv.innerHTML += "<p>No open ports found.</p>";
@@ -45,7 +47,7 @@ async function startScan() {
             }
         }
     } catch (error) {
-        document.getElementById("output").innerHTML = "<p>❌ Error occurred during scan.</p>";
+        outputDiv.innerHTML = "<p>❌ Error occurred during scan.</p>";
     }
 }
 
