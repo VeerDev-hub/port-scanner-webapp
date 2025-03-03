@@ -118,21 +118,23 @@ common_ports = {
     65535: "Dynamic End"
 }
 
-def get_geolocation(ip_address):
-    try:
-        url = f"https://ipapi.co/{ip_address}/json/"
-        response = requests.get(url, timeout=5)
-        if response.status_code == 200:
-            data = response.json()
-            return {
-                "city": data.get('city', 'Unknown'),
-                "region": data.get('region', 'Unknown'),
-                "country": data.get('country_name', 'Unknown'),
-                "isp": data.get('org', 'Unknown')
-            }
-    except:
-        return {"error": "Geolocation failed"}
-    return {"error": "Invalid response"}
+
+def get_geolocation(ip):
+    url = f"https://ipinfo.io/{ip}/json"
+    response = requests.get(url, headers={"User-Agent": "Mozilla/5.0"})
+    
+    if response.status_code == 200:
+        data = response.json()
+        return {
+            "ip": data.get("ip", "Unknown"),
+            "city": data.get("city", "Unknown"),
+            "region": data.get("region", "Unknown"),
+            "country": data.get("country", "Unknown"),
+            "loc": data.get("loc", "Unknown"),
+            "org": data.get("org", "Unknown"),
+            "timezone": data.get("timezone", "Unknown"),
+        }
+    return None
 
 def tcp_handshake(ip, port):
     try:
@@ -232,6 +234,16 @@ def scan():
         thread.join()
 
     return jsonify({"ip": target_ip, "geolocation": geolocation, "os": os_detected, "results": results})
+
+
+@app.route("/")
+def index():
+    return render_template("index.html")
+
+def get_location():
+    user_ip = request.headers.get('X-Forwarded-For', request.remote_addr)
+    location_data = get_geolocation(user_ip)
+    return jsonify(location_data)
 
 @app.route("/export", methods=["POST"])
 def export_results():
