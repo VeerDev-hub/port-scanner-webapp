@@ -7,6 +7,7 @@ import json
 import os
 import platform
 import subprocess
+import re
 
 app = Flask(__name__)
 
@@ -118,34 +119,32 @@ common_ports = {
     65535: "Dynamic End"
 }
 
+def extract_domain(target):
+    """Extract domain name from a URL if needed"""
+    target = target.lower()
+    if target.startswith("http://") or target.startswith("https://"):
+        target = re.sub(r"https?://", "", target)  # Remove http:// or https://
+    target = target.split("/")[0]  # Remove anything after a /
+    return target
 
 def get_geolocation(ip):
     url = f"https://ipinfo.io/{ip}/json"
-    response = requests.get(url, headers={"User-Agent": "Mozilla/5.0"})
-    
-    if response.status_code == 200:
-        data = response.json()
-        return {
-            "ip": data.get("ip", "Unknown"),
-            "city": data.get("city", "Unknown"),
-            "region": data.get("region", "Unknown"),
-            "country": data.get("country", "Unknown"),
-            "loc": data.get("loc", "Unknown"),
-            "org": data.get("org", "Unknown"),
-            "timezone": data.get("timezone", "Unknown"),
-        }
-    return None
-
-def tcp_handshake(ip, port):
     try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(0.5)
-        sock.connect((ip, port))
-        return True
+        response = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=3)
+        if response.status_code == 200:
+            data = response.json()
+            return {
+                "ip": data.get("ip", "Unknown"),
+                "city": data.get("city", "Unknown"),
+                "region": data.get("region", "Unknown"),
+                "country": data.get("country", "Unknown"),
+                "loc": data.get("loc", "Unknown"),
+                "org": data.get("org", "Unknown"),
+                "timezone": data.get("timezone", "Unknown"),
+            }
     except:
-        return False
-    finally:
-        sock.close()
+        pass
+    return {"error": "Geolocation lookup failed"}
 
 def detect_os(ip):
     """ Perform OS detection using TTL value from a ping response """
@@ -160,8 +159,9 @@ def detect_os(ip):
 
         for line in output.split("\n"):
             if "TTL=" in line or "ttl=" in line:
-                ttl_value = int(line.split("TTL=")[-1].split()[0]) if "TTL=" in line else int(line.split("ttl=")[-1].split()[0])
-
+                ttl_value = int(re.search(r"TTL=(\d+)", line, re.IGNORECASE).group(1))
+                break
+        
         if ttl_value:
             if ttl_value <= 64:
                 return "Linux/Unix-based OS"
@@ -169,36 +169,21 @@ def detect_os(ip):
                 return "Windows OS"
             elif ttl_value > 128:
                 return "Network Device (Router/Switch)"
-            else:
-                return "Unknown OS"
+        return "Unknown OS"
     except:
         return "OS detection failed"
-    return "Unknown OS"
-
-
-def detect_firewall(ip, port):
-    try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(1)
-        sock.sendto(b"\x00" * 40, (ip, port))
-        response = sock.recv(1024)
-        if not response:
-            return "Possible Firewall Detected"
-    except:
-        return "Possible Firewall Detected"
-    finally:
-        sock.close()
-    return "No Firewall Detected"
 
 def scan_port(ip, port, results):
-    if tcp_handshake(ip, port):
-        firewall_status = detect_firewall(ip, port)
-        results.append({
-            "port": port,
-            "service": common_ports.get(port, "Unknown"),
-            "status": "Open",
-            "firewall": firewall_status
-        })
+    """Scan a port to check if it's open and fetch its description"""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.settimeout(0.5)
+            if sock.connect_ex((ip, port)) == 0:
+                port_desc = common_ports.get(port, "Unknown Service")
+                results.append({"port": port, "service": port_desc, "status": "Open"})
+    except:
+        pass
+
 
 @app.route("/")
 def home():
@@ -206,23 +191,24 @@ def home():
 
 @app.route("/scan", methods=["POST"])
 def scan():
-    """ Perform a port scan on the given target """
+    """Perform a port scan on the given target"""
     data = request.json
     target = data.get("target")
     ports_to_scan = int(data.get("ports", 100))
-
+    
+    if not target:
+        return jsonify({"error": "No target specified"}), 400
+    
+    target = extract_domain(target)
+    
     try:
-        socket.inet_aton(target)
-        target_ip = target
-    except socket.error:
-        try:
-            target_ip = socket.gethostbyname(target)
-        except:
-            return jsonify({"error": "Invalid IP or Domain"}), 400
-
+        target_ip = socket.gethostbyname(target)
+    except:
+        return jsonify({"error": "Invalid domain or IP"}), 400
+    
     geolocation = get_geolocation(target_ip)
     os_detected = detect_os(target_ip)
-
+    
     results = []
     threads = []
     for port in range(1, ports_to_scan + 1):
@@ -232,39 +218,8 @@ def scan():
     
     for thread in threads:
         thread.join()
-
+    
     return jsonify({"ip": target_ip, "geolocation": geolocation, "os": os_detected, "results": results})
 
-
-@app.route("/")
-def index():
-    return render_template("index.html")
-
-def get_location():
-    user_ip = request.headers.get('X-Forwarded-For', request.remote_addr)
-    location_data = get_geolocation(user_ip)
-    return jsonify(location_data)
-
-@app.route("/export", methods=["POST"])
-def export_results():
-    data = request.json
-    results = data.get("results", [])
-    file_type = data.get("type", "json")
-
-    if file_type == "json":
-        return jsonify(results)
-    elif file_type == "csv":
-        csv_data = "port,service,status,firewall\n"
-        for entry in results:
-            csv_data += f"{entry['port']},{entry['service']},{entry['status']},{entry['firewall']}\n"
-        return csv_data, 200, {"Content-Type": "text/csv"}
-    elif file_type == "txt":
-        txt_data = "Port Scan Results:\n"
-        for entry in results:
-            txt_data += f"Port {entry['port']} ({entry['service']}) - {entry['status']} | {entry['firewall']}\n"
-        return txt_data, 200, {"Content-Type": "text/plain"}
-    else:
-        return jsonify({"error": "Invalid export type"}), 400
-
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    app.run(host="0.0.0.0", port=5000)
