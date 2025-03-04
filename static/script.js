@@ -5,7 +5,7 @@ async function startScan() {
     let numPorts = parseInt(document.getElementById("num_ports").value, 10);
 
     if (!target || isNaN(numPorts) || numPorts < 1 || numPorts > 65535) {
-        alert("Enter a valid target and port range!");
+        alert("Enter a valid target (domain or IP) and port range!");
         return;
     }
 
@@ -23,13 +23,14 @@ async function startScan() {
         let result = await response.json();
         scanResults = result; // Store results for export
 
-        let ip = result.ip || "Unknown";
+        let ip = result.ip || target;  // Use target if IP resolution fails
         let geo = result.geolocation || {};
         let location = `${geo.city || 'Unknown'}, ${geo.region || 'Unknown'}, ${geo.country || 'Unknown'}`;
         let detectedOS = result.os || "Unknown";
 
         outputDiv.innerHTML = `
-            <p><strong>IP:</strong> ${ip}</p>
+            <p><strong>Target:</strong> ${target}</p>
+            <p><strong>Resolved IP:</strong> ${ip}</p>
             <p><strong>Location:</strong> ${location}</p>
             <p>🖥️ <strong>Detected OS:</strong> ${detectedOS}</p>
         `;
@@ -58,15 +59,15 @@ function exportToCSV() {
     }
 
     let csvContent = "data:text/csv;charset=utf-8,";
-    csvContent += "IP Address,Location,Detected OS,Port,Service,Status\n"; // CSV Header
+    csvContent += "Target,Resolved IP,Location,Detected OS,Port,Service,Status\n"; // CSV Header
 
-    let ip = scanResults.ip || "Unknown";
+    let ip = scanResults.ip || scanResults.target || "Unknown";
     let geo = scanResults.geolocation || {};
     let location = `${geo.city || 'Unknown'}, ${geo.region || 'Unknown'}, ${geo.country || 'Unknown'}`;
     let detectedOS = scanResults.os || "Unknown";
 
     scanResults.results.forEach(port => {
-        csvContent += `${ip},"${location}",${detectedOS},${port.port},${port.service},${port.status}\n`;
+        csvContent += `"${scanResults.target}","${ip}","${location}",${detectedOS},${port.port},${port.service},${port.status}\n`;
     });
 
     let encodedUri = encodeURI(csvContent);
