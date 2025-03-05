@@ -116,7 +116,11 @@ common_ports = {
     27017: "MongoDB",
     32768: "NFS",
     49152: "Dynamic Start",
-    65535: "Dynamic End"
+    65535: "Dynamic End",
+    2000: "Cisco SCCP (Skinny Call Control Protocol) – Used for VoIP communication.",
+    5060: "SIP (Session Initiation Protocol) – Used for VoIP calling (Zoom, Skype, etc.).",
+    6160: "Sometimes used for custom applications, potential security risk if unknown.",
+    6162: "Used for internal communication in some applications, could be malware-controlled."
 }
 
 def extract_domain(target):
