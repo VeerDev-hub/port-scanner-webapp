@@ -1,5 +1,8 @@
+# The recon engine is built on the Python standard library only — packets are
+# crafted by hand (socket + struct), so there is NO Scapy / requests / nmap
+# dependency. Flask serves the web UI; pytest runs the offline test suite.
 Flask==3.0.3
-requests==2.32.3
-scapy==2.6.1
 gunicorn==23.0.0
+
+# Dev/test only:
 pytest==8.3.4

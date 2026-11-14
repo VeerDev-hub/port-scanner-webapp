@@ -2,107 +2,143 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Port Scanner</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Recon Console</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
-  <h1 class="glitch">Port Scanner</h1>
+  <h1 class="glitch">Recon Console</h1>
+  <p class="subtitle hacker-text">Custom packet-crafting reconnaissance engine &mdash; authorized use only</p>
+
+  <div id="auth-banner" class="banner">Checking engine capability&hellip;</div>
 
   <div class="scanner">
-    <div class="input-group">
-      <label for="target" class="typing">Target IP or Domain</label>
-      <input id="target" type="text" class="input-box" placeholder="e.g. 192.168.1.1" />
+    <div class="grid">
+      <div class="input-group">
+        <label for="target" class="typing">Target</label>
+        <input id="target" type="text" class="input-box" placeholder="IP, host, 10.0.0.0/24, or 10.0.0.1-20" />
+      </div>
+
+      <div class="input-group">
+        <label for="ports" class="typing">Ports</label>
+        <input id="ports" type="text" class="input-box" value="1-1000" placeholder="80,443,1-1024 or - for all" />
+      </div>
+
+      <div class="input-group">
+        <label for="preset" class="typing">Preset</label>
+        <select id="preset" class="input-box">
+          <option value="">Custom</option>
+          <option value="top20">Top 20 common</option>
+          <option value="web">Web</option>
+          <option value="db">Databases</option>
+          <option value="remote">Remote access</option>
+          <option value="all">All 65535</option>
+        </select>
+      </div>
+
+      <div class="input-group">
+        <label for="scan_type" class="typing">Scan type</label>
+        <select id="scan_type" class="input-box">
+          <option value="connect">TCP Connect (-sT)</option>
+          <option value="syn">SYN half-open (-sS)</option>
+          <option value="fin">FIN stealth (-sF)</option>
+          <option value="null">NULL stealth (-sN)</option>
+          <option value="xmas">XMAS stealth (-sX)</option>
+          <option value="ack">ACK firewall map (-sA)</option>
+          <option value="window">Window (-sW)</option>
+          <option value="maimon">Maimon (-sM)</option>
+          <option value="udp">UDP (-sU)</option>
+        </select>
+      </div>
+
+      <div class="input-group">
+        <label for="timing" class="typing">Timing</label>
+        <select id="timing" class="input-box">
+          <option value="0">T0 paranoid</option>
+          <option value="1">T1 sneaky</option>
+          <option value="2">T2 polite</option>
+          <option value="3" selected>T3 normal</option>
+          <option value="4">T4 aggressive</option>
+          <option value="5">T5 insane</option>
+        </select>
+      </div>
     </div>
 
-    <div class="input-group">
-      <label for="num_ports" class="typing">Number of Ports (1-65535)</label>
-      <input id="num_ports" type="number" class="input-box" min="1" max="65535" value="100" />
-    </div>
+    <fieldset class="toggles">
+      <legend>Detection</legend>
+      <label><input type="checkbox" id="service_detection" checked /> Service/version (-sV)</label>
+      <label><input type="checkbox" id="os_detection" /> OS fingerprint (-O)</label>
+      <label><input type="checkbox" id="vuln_check" checked /> Offline CVE match</label>
+      <label><input type="checkbox" id="skip_discovery" /> Skip host discovery (-Pn)</label>
+      <label><input type="checkbox" id="scan_all_hosts" checked /> Scan all alive hosts (CIDR)</label>
+      <label><input type="checkbox" id="show_all" /> Show closed/filtered ports</label>
+    </fieldset>
 
-    <div class="input-group">
-      <label for="port_range" class="typing">Port Range / List (optional)</label>
-      <input
-        id="port_range"
-        type="text"
-        class="input-box"
-        placeholder="e.g. 1-1024,3306,8080"
-      />
-      <small class="hint-text">If provided, this overrides Number of Ports.</small>
-    </div>
+    <fieldset class="toggles evasion">
+      <legend>Evasion &mdash; raw-socket scans, authorized lab use</legend>
+      <div class="grid">
+        <div class="input-group">
+          <label for="frag_mtu">Fragment MTU (0=off)</label>
+          <input id="frag_mtu" type="number" class="input-box" value="0" min="0" step="8" />
+        </div>
+        <div class="input-group">
+          <label for="decoys">Decoys (RND:5 or ip,ME,ip)</label>
+          <input id="decoys" type="text" class="input-box" placeholder="RND:4,ME" />
+        </div>
+        <div class="input-group">
+          <label for="source_port">Source port</label>
+          <input id="source_port" type="number" class="input-box" placeholder="53" min="1" max="65535" />
+        </div>
+        <div class="input-group">
+          <label for="ttl">TTL</label>
+          <input id="ttl" type="number" class="input-box" placeholder="64" min="1" max="255" />
+        </div>
+      </div>
+    </fieldset>
 
-    <div class="input-group">
-      <label for="scan_type" class="typing">Choose Scan Type</label>
-      <select id="scan_type" class="input-box">
-        <option value="SYN">SYN</option>
-        <option value="UDP">UDP</option>
-        <option value="STEALTH">STEALTH</option>
-        <option value="CONNECT">CONNECT</option>
-      </select>
-    </div>
-
-    <div class="input-group">
-      <label for="top_ports_preset" class="typing">Top Ports Preset</label>
-      <select id="top_ports_preset" class="input-box" onchange="applyTopPreset()">
-        <option value="">Custom</option>
-        <option value="top100">Top 100 (1-100)</option>
-        <option value="top1000">Top 1000 (1-1000)</option>
-        <option value="web">Web Ports</option>
-        <option value="db">Database Ports</option>
-        <option value="remote">Remote Access Ports</option>
-      </select>
-      <small class="hint-text">Preset fills Port Range automatically.</small>
-    </div>
-
-    <div class="input-group checkbox-group">
-      <input type="checkbox" id="show_all" onchange="toggleResults()" />
-      <label for="show_all">Show all ports <span id="toggle-status">(Only open ports)</span></label>
-    </div>
-
-    <div class="input-group checkbox-group">
-      <input type="checkbox" id="include_route" checked />
-      <label for="include_route">Include route table (traceroute)</label>
-    </div>
-
-    <div class="input-group checkbox-group">
-      <input type="checkbox" id="scan_all_hosts" />
-      <label for="scan_all_hosts">For CIDR targets, scan all discovered hosts</label>
-    </div>
+    <fieldset class="toggles authz">
+      <legend>Authorization</legend>
+      <label><input type="checkbox" id="authorized" /> I am authorized to scan non-lab targets</label>
+      <div class="input-group">
+        <label for="allow">Add allowlist CIDR</label>
+        <input id="allow" type="text" class="input-box" placeholder="203.0.113.0/24" />
+      </div>
+    </fieldset>
 
     <div class="button-group">
-      <button onclick="startScan()" class="btn">Start Scan</button>
-      <button onclick="exportToCSV()" class="btn">Export CSV</button>
-      <button onclick="exportToJSON()" class="btn">Export JSON</button>
-      <button onclick="exportToMarkdown()" class="btn">Export Markdown</button>
+      <button id="btn-scan" class="btn">Start Scan</button>
+      <button id="btn-cancel" class="btn btn-danger" disabled>Cancel</button>
+      <button id="btn-csv" class="btn" disabled>CSV</button>
+      <button id="btn-json" class="btn" disabled>JSON</button>
+      <button id="btn-xml" class="btn" disabled>XML</button>
+      <button id="btn-md" class="btn" disabled>Markdown</button>
+      <button id="btn-html" class="btn" disabled>HTML</button>
     </div>
   </div>
 
-  <div id="progress-container" style="display: none;">
+  <div id="progress-container" style="display:none;">
     <div id="progress-bar"></div>
-    <p class="hacker-text">Scanning in progress... <span id="progress-text">0%</span> | ETA: <span id="eta-text">--</span></p>
+    <p class="hacker-text">Scanning&hellip; <span id="progress-text">0%</span> | ETA <span id="eta-text">--</span></p>
   </div>
 
-  <div id="output" class="output-box" style="display: none;">
-    Awaiting input...
-    <div id="scan-table"></div>
-  </div>
+  <div id="summary" class="output-box" style="display:none;"></div>
+  <div id="results" class="output-box" style="display:none;"></div>
 
-  <div id="log-container" style="display: none;">
-    <h3 class="hacker-text">Live Terminal Log</h3>
-    <pre id="scan-log" class="matrix-text">Awaiting scan logs...</pre>
+  <div id="log-container" style="display:none;">
+    <h3 class="hacker-text">Live Engine Log</h3>
+    <pre id="scan-log" class="matrix-text"></pre>
   </div>
 
   <div id="history-container" class="output-box">
     <h3 class="hacker-text">Recent Scans</h3>
-    <div id="history-table">Loading history...</div>
+    <div id="history-table">Loading history&hellip;</div>
   </div>
 
   <footer>
-    <p class="hacker-text">Crafted by <span class="glitch">V33R</span> | Stay Anonymous</p>
+    <p class="hacker-text">Crafted by <span class="glitch">V33R</span> | Authorized testing only</p>
     <div class="social-links">
-      <a href="https://github.com/VeerDev-hub" target="_blank">GitHub</a> |
-      <a href="https://www.linkedin.com/in/veer-pratap-singh-99a368310" target="_blank">LinkedIn</a> |
-      <a href="https://instagram.com/veers.pov" target="_blank">Instagram</a>
+      <a href="https://github.com/VeerDev-hub" target="_blank" rel="noopener">GitHub</a> |
+      <a href="https://www.linkedin.com/in/veer-pratap-singh-99a368310" target="_blank" rel="noopener">LinkedIn</a>
     </div>
   </footer>
 

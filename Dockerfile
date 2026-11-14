@@ -8,11 +8,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    iputils-ping \
-    traceroute \
-    && rm -rf /var/lib/apt/lists/*
-
+# No system packages needed: the engine crafts packets itself and never shells
+# out to ping/traceroute.
 COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
@@ -20,4 +17,7 @@ COPY . /app
 
 EXPOSE 5000
 
-CMD ["gunicorn", "-w", "2", "-k", "gthread", "--threads", "8", "-b", "0.0.0.0:5000", "app:app"]
+# One worker, many threads: the engine uses threads internally and SSE streams
+# need a threaded server. The container runs as root so raw-socket (SYN/stealth)
+# scans work on Linux; see docker-compose.yml for NET_RAW/NET_ADMIN.
+CMD ["gunicorn", "-w", "1", "-k", "gthread", "--threads", "16", "--timeout", "0", "-b", "0.0.0.0:5000", "app:app"]

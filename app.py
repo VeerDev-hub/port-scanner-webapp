@@ -1,72 +1,86 @@
-from flask import Flask, request, jsonify, render_template
+"""
+Flask web front-end for the recon engine.
+
+Design changes from the old app:
+  * Scans run on the new standalone engine (scanner/), not inline Scapy code.
+  * Live updates stream over Server-Sent Events (/scan/stream/<job>) instead of
+    700ms polling, so the browser gets each event as it happens.
+  * SQLite writes are batched: the job row is persisted on meaningful
+    transitions, not on every single log line (the old code rewrote the whole
+    row, logs included, per line under a global lock).
+  * The server keeps ALL results; the client filters open/closed, so the
+    "show all" toggle is restorable (old bug).
+  * Jobs are capped and cancellable; finished jobs are pruned.
+  * No external calls, so nothing about a target leaves the machine.
+"""
+
+from __future__ import annotations
+
+import json
 import os
-import socket
+import queue
+import sqlite3
 import threading
 import time
 import uuid
-import json
-import sqlite3
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Dict, Optional
 
-from enrichment import (
-    detect_firewall,
-    detect_os,
-    discover_hosts,
-    get_geolocation,
-    get_route_table,
-    reverse_dns,
-)
-from scanner_core import scan_port
-from validators import extract_domain, parse_bool, parse_port_targets
+from flask import Flask, Response, jsonify, render_template, request, stream_with_context
+
+from scanner import authorization, reporting
+from scanner.engine import ScanEngine
+from scanner.models import EventType, ScanConfig, ScanEvent, ScanType
+from scanner.packet.raw import capability_report
+from scanner.timing import template
 
 app = Flask(__name__)
 
-SCAN_JOBS = {}
-SCAN_LOCK = threading.Lock()
 DB_PATH = os.path.join(os.path.dirname(__file__), "scan_data.db")
+MAX_JOBS = 50
+MAX_PORTS = 65535
+MAX_HOSTS = 1024
+
+_JOBS: Dict[str, "Job"] = {}
+_JOBS_LOCK = threading.Lock()
 
 
-def _db_conn():
+# --------------------------------------------------------------------------- DB
+def _db():
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
 
 
-def init_db():
-    conn = _db_conn()
+_HISTORY_COLUMNS = {
+    "id", "timestamp", "target", "scan_type", "hosts", "ports",
+    "open_count", "open_ports", "result",
+}
+
+
+def init_db() -> None:
+    conn = _db()
     try:
-        cur = conn.cursor()
-        cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS jobs (
-                job_id TEXT PRIMARY KEY,
-                status TEXT,
-                created_at REAL,
-                started_at REAL,
-                finished_at REAL,
-                target TEXT,
-                target_mode TEXT,
-                completed INTEGER,
-                total INTEGER,
-                percent REAL,
-                eta_seconds REAL,
-                logs TEXT,
-                error TEXT,
-                result TEXT
-            )
-            """
-        )
-        cur.execute(
+        # Migrate away from the old incompatible schema (target_key/... columns).
+        existing = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='history'"
+        ).fetchone()
+        if existing:
+            cols = {row["name"] for row in conn.execute("PRAGMA table_info(history)")}
+            if cols != _HISTORY_COLUMNS:
+                conn.execute("DROP TABLE history")
+                conn.commit()
+        conn.execute(
             """
             CREATE TABLE IF NOT EXISTS history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 timestamp INTEGER,
-                target_key TEXT,
-                target_mode TEXT,
-                scanned_hosts TEXT,
-                scanned_ports INTEGER,
-                open_ports_count INTEGER,
-                open_ports TEXT
+                target TEXT,
+                scan_type TEXT,
+                hosts INTEGER,
+                ports INTEGER,
+                open_count INTEGER,
+                open_ports TEXT,
+                result TEXT
             )
             """
         )
@@ -75,159 +89,30 @@ def init_db():
         conn.close()
 
 
-def _persist_job(job):
-    conn = _db_conn()
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            """
-            INSERT INTO jobs (
-                job_id, status, created_at, started_at, finished_at, target, target_mode,
-                completed, total, percent, eta_seconds, logs, error, result
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(job_id) DO UPDATE SET
-                status=excluded.status,
-                created_at=excluded.created_at,
-                started_at=excluded.started_at,
-                finished_at=excluded.finished_at,
-                target=excluded.target,
-                target_mode=excluded.target_mode,
-                completed=excluded.completed,
-                total=excluded.total,
-                percent=excluded.percent,
-                eta_seconds=excluded.eta_seconds,
-                logs=excluded.logs,
-                error=excluded.error,
-                result=excluded.result
-            """,
-            (
-                job.get("id"),
-                job.get("status"),
-                job.get("created_at"),
-                job.get("started_at"),
-                job.get("finished_at"),
-                job.get("target"),
-                job.get("target_mode"),
-                int(job.get("completed", 0)),
-                int(job.get("total", 0)),
-                float(job.get("percent", 0.0)),
-                None if job.get("eta_seconds") is None else float(job.get("eta_seconds")),
-                json.dumps(job.get("logs", [])),
-                json.dumps(job.get("error")) if job.get("error") is not None else None,
-                json.dumps(job.get("result")) if job.get("result") is not None else None,
-            ),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def _fetch_job_from_db(job_id):
-    conn = _db_conn()
-    try:
-        cur = conn.cursor()
-        cur.execute("SELECT * FROM jobs WHERE job_id = ?", (job_id,))
-        row = cur.fetchone()
-        if not row:
-            return None
-        return {
-            "id": row["job_id"],
-            "status": row["status"],
-            "created_at": row["created_at"],
-            "started_at": row["started_at"],
-            "finished_at": row["finished_at"],
-            "target": row["target"],
-            "target_mode": row["target_mode"],
-            "completed": row["completed"] or 0,
-            "total": row["total"] or 0,
-            "percent": row["percent"] or 0.0,
-            "eta_seconds": row["eta_seconds"],
-            "logs": json.loads(row["logs"] or "[]"),
-            "error": json.loads(row["error"]) if row["error"] else None,
-            "result": json.loads(row["result"]) if row["result"] else None,
-        }
-    finally:
-        conn.close()
-
-
-init_db()
-
-
-def error_response(message, code="bad_request", status=400, hint=None, details=None):
-    payload = {"error": {"code": code, "message": message}}
-    if hint:
-        payload["error"]["hint"] = hint
-    if details is not None:
-        payload["error"]["details"] = details
-    return jsonify(payload), status
-
-
-def _set_job(job_id, **updates):
-    with SCAN_LOCK:
-        if job_id in SCAN_JOBS:
-            SCAN_JOBS[job_id].update(updates)
-            _persist_job(SCAN_JOBS[job_id])
-
-
-def _append_log(job_id, line):
-    with SCAN_LOCK:
-        if job_id not in SCAN_JOBS:
-            return
-        logs = SCAN_JOBS[job_id].setdefault("logs", [])
-        logs.append(line)
-        if len(logs) > 400:
-            del logs[:200]
-        _persist_job(SCAN_JOBS[job_id])
-
-
-def _snapshot_job(job_id):
-    with SCAN_LOCK:
-        job = SCAN_JOBS.get(job_id)
-        if job:
-            return dict(job)
-    return _fetch_job_from_db(job_id)
-
-
-def _record_history(result):
-    target_key = result.get("target", "unknown")
-    open_ports = sorted(
-        f"{entry.get('host', result.get('ip', 'unknown'))}:{entry.get('port')}"
-        for entry in result.get("results", [])
-        if "open" in (entry.get("status", "").lower())
+def _record_history(result) -> Dict[str, list]:
+    """Persist a finished scan and diff it against the previous run of the same target."""
+    open_keys = sorted(
+        f"{p.host}:{p.port}" for p in result.all_ports()
+        if p.state.value.startswith("open")
     )
-
-    compare = {"opened": open_ports, "closed": []}
-    conn = _db_conn()
+    compare = {"opened": open_keys, "closed": []}
+    conn = _db()
     try:
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT open_ports FROM history WHERE target_key = ? ORDER BY id DESC LIMIT 1",
-            (target_key,),
-        )
-        row = cur.fetchone()
+        row = conn.execute(
+            "SELECT open_ports FROM history WHERE target = ? ORDER BY id DESC LIMIT 1",
+            (result.target,),
+        ).fetchone()
         if row:
-            previous_ports = json.loads(row["open_ports"] or "[]")
-            previous_set = set(previous_ports)
-            current_set = set(open_ports)
-            compare = {
-                "opened": sorted(current_set - previous_set),
-                "closed": sorted(previous_set - current_set),
-            }
-
-        cur.execute(
-            """
-            INSERT INTO history (
-                timestamp, target_key, target_mode, scanned_hosts, scanned_ports, open_ports_count, open_ports
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
+            prev = set(json.loads(row["open_ports"] or "[]"))
+            cur = set(open_keys)
+            compare = {"opened": sorted(cur - prev), "closed": sorted(prev - cur)}
+        conn.execute(
+            "INSERT INTO history (timestamp, target, scan_type, hosts, ports, open_count, open_ports, result) "
+            "VALUES (?,?,?,?,?,?,?,?)",
             (
-                int(time.time()),
-                target_key,
-                result.get("target_mode"),
-                json.dumps(result.get("scanned_hosts", [])),
-                int(result.get("scanned_ports", 0)),
-                int(len(open_ports)),
-                json.dumps(open_ports),
+                int(time.time()), result.target, result.scan_type, len(result.hosts),
+                len(result.port_query), len(open_keys), json.dumps(open_keys),
+                json.dumps(result.to_dict()),
             ),
         )
         conn.commit()
@@ -236,181 +121,133 @@ def _record_history(result):
     return compare
 
 
-def _resolve_scan_targets(target_raw, scan_all_hosts=False):
-    target_clean = extract_domain(target_raw)
-    if not target_clean:
-        raise ValueError("No target specified")
+# ------------------------------------------------------------------------- Jobs
+class Job:
+    """One running scan: owns its engine, an event queue, and a buffered log."""
 
-    if "/" in target_clean:
-        alive_hosts = discover_hosts(target_clean)
-        if not alive_hosts:
-            raise ValueError("No alive hosts discovered in CIDR target")
-        if scan_all_hosts:
-            return target_clean, "cidr", alive_hosts, alive_hosts
-        return target_clean, "cidr", alive_hosts, [alive_hosts[0]]
+    def __init__(self, job_id: str, config: ScanConfig):
+        self.id = job_id
+        self.config = config
+        self.status = "queued"
+        self.created_at = time.time()
+        self.events: "queue.Queue[ScanEvent]" = queue.Queue()
+        self.log: list[str] = []
+        self.progress = {"completed": 0, "total": 0, "percent": 0.0, "eta_seconds": None}
+        self.result_dict: Optional[dict] = None
+        self.error: Optional[str] = None
+        self.engine = ScanEngine(config, on_event=self._on_event)
+        self._thread: Optional[threading.Thread] = None
 
-    try:
-        ip = socket.gethostbyname(target_clean)
-    except Exception as exc:
-        raise ValueError("Invalid domain or IP") from exc
-    return target_clean, "single", [ip], [ip]
+    def _on_event(self, e: ScanEvent) -> None:
+        if e.type is EventType.PROGRESS:
+            self.progress = {
+                "completed": e.data.get("completed", 0),
+                "total": e.data.get("total", 0),
+                "percent": e.data.get("percent", 0.0),
+                "eta_seconds": e.data.get("eta_seconds"),
+            }
+        elif e.message:
+            self.log.append(e.message)
+            if len(self.log) > 500:
+                del self.log[:250]
+        self.events.put(e)
 
+    def start(self) -> None:
+        self.status = "running"
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
 
-def run_scan_job(job_id, payload):
-    try:
-        target_input = payload.get("target")
-        port_range_raw = payload.get("port_range", "")
-        scan_type_raw = str(payload.get("scan_type", "SYN")).upper()
-        scan_type = scan_type_raw if scan_type_raw in {"SYN", "UDP", "STEALTH", "CONNECT"} else "SYN"
-        show_all = parse_bool(payload.get("show_all"), default=False)
-        include_route = parse_bool(payload.get("include_route"), default=True)
-        scan_all_hosts = parse_bool(payload.get("scan_all_hosts"), default=False)
-
-        ports_list, port_query = parse_port_targets(
-            port_range_raw=port_range_raw,
-            ports_count_raw=payload.get("ports", 100),
-        )
-
+    def _run(self) -> None:
         try:
-            workers = int(payload.get("workers", 200))
-        except Exception:
-            workers = 200
-        workers = max(1, min(1000, workers))
+            result = self.engine.run()
+            compare = _record_history(result)
+            d = result.to_dict()
+            d["compare"] = compare
+            self.result_dict = d
+            self.status = "failed" if result.warnings and not result.hosts else "completed"
+        except Exception as exc:  # pragma: no cover - defensive
+            self.error = str(exc)
+            self.status = "failed"
+            self.events.put(ScanEvent(EventType.ERROR, f"Scan crashed: {exc}"))
+        finally:
+            self.events.put(ScanEvent(EventType.DONE, "stream-end", data={"final": True}))
+
+    def cancel(self) -> None:
+        self.engine.cancel()
+        self.status = "cancelled"
+
+
+def _prune_jobs() -> None:
+    with _JOBS_LOCK:
+        if len(_JOBS) <= MAX_JOBS:
+            return
+        done = sorted(
+            (j for j in _JOBS.values() if j.status in ("completed", "failed", "cancelled")),
+            key=lambda j: j.created_at,
+        )
+        for j in done[: len(_JOBS) - MAX_JOBS]:
+            _JOBS.pop(j.id, None)
+
+
+def _build_config(data: dict) -> ScanConfig:
+    scan_type = ScanType(data.get("scan_type", "connect")) if data.get("scan_type") in ScanType._value2member_map_ else ScanType.CONNECT
+    ports, query = _parse_ports(data.get("ports", "1-1000"))
+    tmpl = template(int(data.get("timing", 3)))
+    for cidr in data.get("allow", []) or []:
         try:
-            timeout_seconds = float(payload.get("timeout", 1.0))
-        except Exception:
-            timeout_seconds = 1.0
-        timeout_seconds = max(0.2, min(5.0, timeout_seconds))
-        try:
-            retries = int(payload.get("retries", 0))
-        except Exception:
-            retries = 0
-        retries = max(0, min(3, retries))
-        try:
-            delay_seconds = float(payload.get("delay", 0.0))
-        except Exception:
-            delay_seconds = 0.0
-        delay_seconds = max(0.0, min(1.0, delay_seconds))
-
-        target_clean, target_mode, alive_hosts, scan_hosts = _resolve_scan_targets(
-            target_input, scan_all_hosts=scan_all_hosts
-        )
-        primary_ip = scan_hosts[0]
-        total = len(scan_hosts) * len(ports_list)
-        started_at = time.time()
-
-        _set_job(
-            job_id,
-            status="running",
-            target=target_clean,
-            target_mode=target_mode,
-            alive_hosts=alive_hosts,
-            scanned_hosts=scan_hosts,
-            total=total,
-            completed=0,
-            percent=0.0,
-            started_at=started_at,
-        )
-        _append_log(job_id, f"Starting {scan_type} scan on {target_clean} ({target_mode})")
-        _append_log(job_id, f"Ports: {port_query}")
-
-        geolocation = get_geolocation(primary_ip)
-        firewall = detect_firewall(primary_ip, host_header=target_clean)
-        os_detected = detect_os(primary_ip)
-        hostname = reverse_dns(primary_ip)
-        route_table = get_route_table(primary_ip) if include_route else []
-
-        results = []
-        completed = 0
-
-        with ThreadPoolExecutor(max_workers=workers) as executor:
-            future_map = {}
-            for host in scan_hosts:
-                for port in ports_list:
-                    future = executor.submit(
-                        scan_port,
-                        host,
-                        port,
-                        scan_type,
-                        timeout_seconds,
-                        retries,
-                        delay_seconds,
-                        target_clean,
-                    )
-                    future_map[future] = host
-
-            for future in as_completed(future_map):
-                host = future_map[future]
-                result = future.result()
-                result["host"] = host
-                results.append(result)
-                _append_log(
-                    job_id,
-                    f"{host}:{result.get('port')} -> {result.get('status', 'Unknown')}"
-                )
-                completed += 1
-                percent = round((completed / total) * 100, 2) if total else 100.0
-                elapsed = max(0.001, time.time() - started_at)
-                eta_seconds = ((elapsed / completed) * (total - completed)) if completed > 0 else None
-                if completed % 20 == 0 or completed == total:
-                    _append_log(job_id, f"Progress: {completed}/{total}")
-                _set_job(job_id, completed=completed, percent=percent, eta_seconds=eta_seconds)
-
-        if not show_all:
-            results = [r for r in results if "open" in r.get("status", "").lower()]
-
-        results = sorted(results, key=lambda x: (x.get("host", ""), x.get("port", 0)))
-
-        final_result = {
-            "target": target_clean,
-            "target_mode": target_mode,
-            "alive_hosts": alive_hosts,
-            "scanned_hosts": scan_hosts,
-            "ip": primary_ip,
-            "hostname": hostname,
-            "geolocation": geolocation,
-            "os": os_detected,
-            "scan_type": scan_type,
-            "port_query": port_query,
-            "scanned_ports": len(ports_list),
-            "firewall": firewall,
-            "include_route": include_route,
-            "route_table": route_table,
-            "logs": _snapshot_job(job_id).get("logs", []),
-            "results": results,
-        }
-        final_result["compare"] = _record_history(final_result)
-
-        _set_job(
-            job_id,
-            status="completed",
-            completed=total,
-            percent=100.0,
-            eta_seconds=0.0,
-            finished_at=time.time(),
-            result=final_result,
-        )
-        _append_log(job_id, "Scan complete.")
-    except ValueError as exc:
-        _set_job(
-            job_id,
-            status="failed",
-            finished_at=time.time(),
-            error={"code": "validation_error", "message": str(exc)},
-        )
-    except Exception as exc:
-        _set_job(
-            job_id,
-            status="failed",
-            finished_at=time.time(),
-            error={
-                "code": "internal_error",
-                "message": "Internal server error during scanning.",
-                "details": str(exc),
-            },
-        )
+            authorization.add_allowed(cidr)
+        except ValueError:
+            pass
+    return ScanConfig(
+        target=str(data.get("target", "")).strip(),
+        ports=ports,
+        port_query=query,
+        scan_type=scan_type,
+        timing=int(data.get("timing", 3)),
+        max_concurrency=tmpl.max_concurrency,
+        timeout=float(data.get("timeout", tmpl.timeout)),
+        retries=tmpl.retries,
+        scan_delay=tmpl.scan_delay,
+        jitter=tmpl.jitter,
+        skip_discovery=bool(data.get("skip_discovery", False)),
+        discover_all_hosts=bool(data.get("scan_all_hosts", True)),
+        service_detection=bool(data.get("service_detection", True)),
+        os_detection=bool(data.get("os_detection", False)),
+        vuln_check=bool(data.get("vuln_check", True)),
+        frag_mtu=int(data.get("frag_mtu", 0)),
+        decoys=[d.strip() for d in str(data.get("decoys", "")).split(",") if d.strip()],
+        source_port=int(data["source_port"]) if data.get("source_port") else None,
+        ttl=int(data["ttl"]) if data.get("ttl") else None,
+        authorized=bool(data.get("authorized", False)),
+    )
 
 
+def _parse_ports(spec: str):
+    spec = str(spec).strip()
+    if spec == "-":
+        return list(range(1, 65536)), "1-65535"
+    ports: set[int] = set()
+    for chunk in spec.split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        if "-" in chunk:
+            lo, hi = chunk.split("-", 1)
+            lo_i, hi_i = int(lo), int(hi)
+            if not (1 <= lo_i <= hi_i <= 65535):
+                raise ValueError(f"bad range: {chunk}")
+            ports.update(range(lo_i, hi_i + 1))
+        else:
+            p = int(chunk)
+            if not 1 <= p <= 65535:
+                raise ValueError(f"port out of range: {chunk}")
+            ports.add(p)
+    if not ports:
+        raise ValueError("no ports parsed")
+    return sorted(ports), spec
+
+
+# ----------------------------------------------------------------------- Routes
 @app.route("/")
 def home():
     return render_template("index.html")
@@ -418,131 +255,143 @@ def home():
 
 @app.route("/health")
 def health():
-    return jsonify({"status": "ok"})
+    return jsonify({"status": "ok", "capability": capability_report()})
 
 
-@app.route("/history")
-def history():
-    conn = _db_conn()
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            """
-            SELECT timestamp, target_key, target_mode, scanned_hosts, scanned_ports, open_ports_count
-            FROM history
-            ORDER BY id DESC
-            LIMIT 20
-            """
-        )
-        rows = cur.fetchall()
-        items = []
-        for row in rows:
-            items.append(
-                {
-                    "timestamp": row["timestamp"],
-                    "target_key": row["target_key"],
-                    "target_mode": row["target_mode"],
-                    "scanned_hosts": json.loads(row["scanned_hosts"] or "[]"),
-                    "scanned_ports": row["scanned_ports"] or 0,
-                    "open_ports_count": row["open_ports_count"] or 0,
-                }
-            )
-        return jsonify({"history": items})
-    finally:
-        conn.close()
+@app.route("/capability")
+def capability():
+    return jsonify(capability_report())
 
 
 @app.route("/scan/start", methods=["POST"])
 def scan_start():
-    data = request.json or {}
+    data = request.get_json(silent=True) or {}
     if not data.get("target"):
-        return error_response("No target specified", hint="Provide a domain, IP, or CIDR block.")
+        return jsonify({"error": {"message": "No target specified"}}), 400
+    try:
+        config = _build_config(data)
+    except ValueError as exc:
+        return jsonify({"error": {"message": f"Invalid scan options: {exc}"}}), 400
+    if len(config.ports) > MAX_PORTS:
+        return jsonify({"error": {"message": "Too many ports requested"}}), 400
 
     job_id = str(uuid.uuid4())
-    with SCAN_LOCK:
-        SCAN_JOBS[job_id] = {
-            "id": job_id,
-            "status": "queued",
-            "created_at": time.time(),
-            "logs": [],
-            "completed": 0,
-            "total": 0,
-            "percent": 0.0,
-            "eta_seconds": None,
-        }
-        _persist_job(SCAN_JOBS[job_id])
-
-    thread = threading.Thread(target=run_scan_job, args=(job_id, data), daemon=True)
-    thread.start()
-    return jsonify({"job_id": job_id})
+    job = Job(job_id, config)
+    with _JOBS_LOCK:
+        _JOBS[job_id] = job
+    _prune_jobs()
+    job.start()
+    return jsonify({"job_id": job_id, "capability": capability_report()})
 
 
-@app.route("/scan/status/<job_id>")
-def scan_status(job_id):
-    job = _snapshot_job(job_id)
+@app.route("/scan/stream/<job_id>")
+def scan_stream(job_id):
+    """Server-Sent Events: forward engine events to the browser as they occur."""
+    job = _JOBS.get(job_id)
     if not job:
-        return error_response("Scan job not found", code="not_found", status=404)
+        return jsonify({"error": {"message": "job not found"}}), 404
 
-    return jsonify(
-        {
-            "job_id": job_id,
-            "status": job.get("status"),
-            "completed": job.get("completed", 0),
-            "total": job.get("total", 0),
-            "percent": job.get("percent", 0.0),
-            "eta_seconds": job.get("eta_seconds"),
-            "logs": job.get("logs", []),
-            "target": job.get("target"),
-            "target_mode": job.get("target_mode"),
-        }
-    )
+    @stream_with_context
+    def generate():
+        yield f"data: {json.dumps({'type': 'hello', 'capability': capability_report()})}\n\n"
+        while True:
+            try:
+                e = job.events.get(timeout=30)
+            except queue.Empty:
+                yield ": keep-alive\n\n"
+                continue
+            payload = e.to_dict()
+            if e.type is EventType.DONE and e.data.get("final"):
+                payload["status"] = job.status
+                payload["result"] = job.result_dict
+                yield f"data: {json.dumps(payload, default=str)}\n\n"
+                break
+            yield f"data: {json.dumps(payload, default=str)}\n\n"
+
+    return Response(generate(), mimetype="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @app.route("/scan/result/<job_id>")
 def scan_result(job_id):
-    job = _snapshot_job(job_id)
+    job = _JOBS.get(job_id)
     if not job:
-        return error_response("Scan job not found", code="not_found", status=404)
-
-    status = job.get("status")
-    if status in {"queued", "running"}:
-        return jsonify({"job_id": job_id, "status": status}), 202
-    if status == "failed":
-        err = job.get("error") or {"code": "scan_failed", "message": "Scan failed"}
-        return jsonify({"job_id": job_id, "status": status, "error": err}), 400
-    return jsonify(job.get("result", {}))
+        return jsonify({"error": {"message": "job not found"}}), 404
+    if job.status in ("queued", "running"):
+        return jsonify({"status": job.status, "progress": job.progress}), 202
+    if job.status == "failed" and not job.result_dict:
+        return jsonify({"status": "failed", "error": job.error or "scan failed"}), 400
+    return jsonify({"status": job.status, "result": job.result_dict})
 
 
-@app.route("/scan", methods=["POST"])
-def scan_legacy():
-    """
-    Backward-compatible sync route.
-    Starts an async job, waits for completion, then returns result.
-    """
-    data = request.json or {}
-    if not data.get("target"):
-        return error_response("No target specified", hint="Provide a domain, IP, or CIDR block.")
-
-    job_id = str(uuid.uuid4())
-    with SCAN_LOCK:
-        SCAN_JOBS[job_id] = {
-            "id": job_id,
-            "status": "queued",
-            "created_at": time.time(),
-            "logs": [],
-            "completed": 0,
-            "total": 0,
-            "percent": 0.0,
-            "eta_seconds": None,
-        }
-        _persist_job(SCAN_JOBS[job_id])
-    run_scan_job(job_id, data)
-    job = _snapshot_job(job_id)
+@app.route("/scan/cancel/<job_id>", methods=["POST"])
+def scan_cancel(job_id):
+    job = _JOBS.get(job_id)
     if not job:
-        return error_response("Scan job disappeared", code="internal_error", status=500)
-    if job.get("status") == "failed":
-        return jsonify({"error": job.get("error", {"message": "Scan failed"})}), 400
-    return jsonify(job.get("result", {}))
+        return jsonify({"error": {"message": "job not found"}}), 404
+    job.cancel()
+    return jsonify({"status": "cancelled"})
+
+
+@app.route("/scan/report/<job_id>.<fmt>")
+def scan_report(job_id, fmt):
+    job = _JOBS.get(job_id)
+    if not job or not job.result_dict:
+        return jsonify({"error": {"message": "no result"}}), 404
+    # Rebuild a lightweight ScanResult view is overkill; render from stored dict.
+    from scanner.models import ScanResult, HostResult, PortResult, PortState, Service, Vulnerability, OSMatch
+    d = job.result_dict
+    hosts = []
+    for h in d.get("hosts", []):
+        ports = []
+        for p in h.get("ports", []):
+            svc = None
+            if p.get("service"):
+                s = p["service"]
+                svc = Service(
+                    name=s.get("name", ""), product=s.get("product", ""),
+                    version=s.get("version", ""), extra=s.get("extra", ""),
+                    banner=s.get("banner", ""), confidence=s.get("confidence", 0.0),
+                    vulns=[Vulnerability(**v) for v in s.get("vulns", [])],
+                )
+            ports.append(PortResult(
+                host=p["host"], port=p["port"], protocol=p.get("protocol", "tcp"),
+                state=PortState(p["state"]), reason=p.get("reason", ""),
+                service=svc, rtt_ms=p.get("rtt_ms"),
+            ))
+        os_m = OSMatch(**h["os"]) if h.get("os") else None
+        hosts.append(HostResult(host=h["host"], hostname=h.get("hostname"),
+                                state=h.get("state", "up"), ports=ports, os=os_m))
+    result = ScanResult(
+        target=d["target"], scan_type=d["scan_type"], port_query=d["port_query"],
+        started_at=d["started_at"], finished_at=d["finished_at"], hosts=hosts,
+        capability=d.get("capability", {}), evasion=d.get("evasion", []),
+        warnings=d.get("warnings", []),
+    )
+    try:
+        body = reporting.render(result, fmt)
+    except ValueError:
+        return jsonify({"error": {"message": "unknown format"}}), 400
+    ctype = {"json": "application/json", "csv": "text/csv", "xml": "application/xml",
+             "html": "text/html", "markdown": "text/markdown", "md": "text/markdown"}.get(fmt, "text/plain")
+    return Response(body, mimetype=ctype,
+                    headers={"Content-Disposition": f'attachment; filename="recon_{job_id[:8]}.{fmt}"'})
+
+
+@app.route("/history")
+def history():
+    conn = _db()
+    try:
+        rows = conn.execute(
+            "SELECT timestamp, target, scan_type, hosts, ports, open_count "
+            "FROM history ORDER BY id DESC LIMIT 25"
+        ).fetchall()
+        return jsonify({"history": [dict(r) for r in rows]})
+    finally:
+        conn.close()
+
+
+init_db()
 
 
 if __name__ == "__main__":
@@ -550,4 +399,5 @@ if __name__ == "__main__":
     host = os.environ.get("HOST", "127.0.0.1")
     port = int(os.environ.get("PORT", "5000"))
     debug = os.environ.get("DEBUG", "false").lower() == "true"
-    app.run(host=host, port=port, debug=debug)
+    # Threaded so SSE streams and scans run concurrently.
+    app.run(host=host, port=port, debug=debug, threaded=True)

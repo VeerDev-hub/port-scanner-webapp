@@ -1,0 +1,47 @@
+{
+  "_meta": {
+    "note": "Curated DEMONSTRATION dataset for an authorized-lab recon tool. NOT a complete or authoritative vulnerability feed. Version matching is approximate (string/numeric compare on dotted versions). Confirm every finding against an authoritative source (NVD) before acting.",
+    "schema": "product -> list of {cve, severity, cvss, summary, version_lt (optional), version_range (optional), version_exact (optional)}"
+  },
+  "openssh": [
+    {"cve": "CVE-2024-6387", "severity": "high", "cvss": 8.1, "summary": "regreSSHion: unauthenticated RCE via signal handler race", "version_range": [">=8.5", "<9.8"]},
+    {"cve": "CVE-2023-38408", "severity": "high", "cvss": 9.8, "summary": "RCE in ssh-agent PKCS#11 forwarding", "version_lt": "9.3.2"},
+    {"cve": "CVE-2020-14145", "severity": "medium", "cvss": 5.9, "summary": "Observable discrepancy / MITM during host key exchange", "version_range": [">=5.7", "<8.4"]}
+  ],
+  "nginx": [
+    {"cve": "CVE-2019-20372", "severity": "medium", "cvss": 5.3, "summary": "HTTP request smuggling via error_page", "version_range": [">=0.7.12", "<1.17.7"]},
+    {"cve": "CVE-2021-23017", "severity": "high", "cvss": 7.7, "summary": "Off-by-one in DNS resolver -> memory corruption", "version_lt": "1.21.0"}
+  ],
+  "apache": [
+    {"cve": "CVE-2021-41773", "severity": "high", "cvss": 7.5, "summary": "Path traversal / RCE in mod_cgi", "version_exact": "2.4.49"},
+    {"cve": "CVE-2021-42013", "severity": "critical", "cvss": 9.8, "summary": "Path traversal / RCE (incomplete fix of 41773)", "version_range": [">=2.4.49", "<=2.4.50"]},
+    {"cve": "CVE-2017-5638", "severity": "critical", "cvss": 10.0, "summary": "Struts-style Content-Type RCE (historical httpd/front-end)", "version_lt": "2.4.0"}
+  ],
+  "httpd": [
+    {"cve": "CVE-2021-42013", "severity": "critical", "cvss": 9.8, "summary": "Path traversal / RCE", "version_range": [">=2.4.49", "<=2.4.50"]}
+  ],
+  "mysql": [
+    {"cve": "CVE-2012-2122", "severity": "high", "cvss": 8.1, "summary": "Authentication bypass via memcmp timing", "version_range": [">=5.1.0", "<5.5.24"]}
+  ],
+  "mariadb": [
+    {"cve": "CVE-2021-27928", "severity": "high", "cvss": 7.8, "summary": "RCE via wsrep_provider / SET GLOBAL", "version_lt": "10.5.9"}
+  ],
+  "vsftpd": [
+    {"cve": "CVE-2011-2523", "severity": "critical", "cvss": 9.8, "summary": "Backdoor command execution in vsftpd 2.3.4", "version_exact": "2.3.4"}
+  ],
+  "proftpd": [
+    {"cve": "CVE-2015-3306", "severity": "critical", "cvss": 9.8, "summary": "mod_copy unauthenticated file read/write (RCE)", "version_range": [">=1.3.5", "<1.3.5a"]}
+  ],
+  "redis": [
+    {"cve": "CVE-2022-0543", "severity": "critical", "cvss": 10.0, "summary": "Lua sandbox escape -> RCE (Debian/Ubuntu packaging)", "version_lt": "7.0.0"}
+  ],
+  "exim": [
+    {"cve": "CVE-2019-10149", "severity": "critical", "cvss": 9.8, "summary": "The Return of the WIZard: RCE via recipient address", "version_range": [">=4.87", "<4.92"]}
+  ],
+  "postfix": [
+    {"cve": "CVE-2023-51764", "severity": "medium", "cvss": 5.3, "summary": "SMTP smuggling via inbound email", "version_lt": "3.8.5"}
+  ],
+  "dovecot": [
+    {"cve": "CVE-2024-23184", "severity": "medium", "cvss": 5.3, "summary": "Resource exhaustion via many address headers", "version_lt": "2.3.21.1"}
+  ]
+}

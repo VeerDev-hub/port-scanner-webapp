@@ -320,3 +320,56 @@ footer a:hover {
         padding: 7px;
     }
 }
+
+/* ===== Recon Console additions ===== */
+.subtitle { text-align: center; color: var(--muted); margin-top: -6px; }
+
+.banner {
+    width: min(960px, 100%);
+    padding: 10px 14px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--panel);
+    color: var(--muted);
+    font-size: 0.88rem;
+}
+.banner.ok { border-color: var(--neon); color: var(--neon-soft); }
+.banner.warn { border-color: #b7892f; color: #ffd98a; }
+
+.grid {
+    display: grid;
+    gap: 12px;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+fieldset.toggles {
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    margin-top: 12px;
+    padding: 10px 14px;
+}
+fieldset.toggles legend { color: var(--neon); padding: 0 6px; font-size: 0.85rem; }
+fieldset.toggles label { display: inline-flex; align-items: center; gap: 6px; margin: 4px 14px 4px 0; }
+fieldset.evasion { border-color: #6b4a1f; }
+fieldset.evasion legend { color: #ffd98a; }
+fieldset.authz { border-color: #7a2f2f; }
+fieldset.authz legend { color: #ff9a8a; }
+
+.btn-danger { border-color: var(--danger); color: var(--danger); }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+tr.row-open { background: rgba(57, 255, 112, 0.08); }
+td.cve-cell { color: var(--danger); font-weight: bold; }
+.detail-row td { background: rgba(5, 12, 7, 0.6); }
+.svc-banner {
+    white-space: pre-wrap;
+    word-break: break-all;
+    max-height: 140px;
+    overflow: auto;
+    color: var(--muted);
+    margin: 4px 0;
+    font-size: 0.8rem;
+}
+.svc-extra { color: var(--neon-soft); font-size: 0.82rem; }
+.vuln-line { color: #ffb0a8; font-size: 0.82rem; margin: 2px 0; }
+.warn-text { color: #ffd98a; }
