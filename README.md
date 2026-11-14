@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🛰️ Recon Console
+# Recon Console
 
 ### A from-scratch, Nmap-style network reconnaissance engine
 
@@ -15,7 +15,7 @@ no `requests`, no external API. Ships as a **command-line tool** *and* a
 
 </div>
 
-> ### ⚠️ Authorized use only
+> ### Authorized use only
 > Active scanning of systems you do not own or lack written permission to test
 > may be **illegal**. By default this tool refuses to scan anything outside
 > loopback / private (RFC-1918) / your own lab ranges. See
@@ -42,7 +42,7 @@ no `requests`, no external API. Ships as a **command-line tool** *and* a
 
 ---
 
-## 🎯 Why this exists
+## Why this exists
 
 Most "port scanners" are thin wrappers around `nmap` or Scapy. This one is the
 opposite: the interesting part — **assembling and decoding raw IP/TCP/UDP/ICMP
@@ -52,7 +52,7 @@ keeps everything **offline**: no target data ever leaves your machine.
 
 ---
 
-## ✨ Features
+## Features
 
 | Area | What you get |
 |---|---|
@@ -69,7 +69,7 @@ keeps everything **offline**: no target data ever leaves your machine.
 
 ---
 
-## 🔬 How it works
+## How it works
 
 ```
  target ─▶ resolve ─▶ host discovery ─▶ port scan ─▶ service/version ─▶ OS fingerprint ─▶ CVE match ─▶ report
@@ -89,7 +89,7 @@ that lives in `scanner/packet/` and `scanner/scans/` in plain, commented Python.
 
 ---
 
-## 📦 Install
+## Install
 
 ```bash
 python -m venv .venv
@@ -102,7 +102,7 @@ itself is pure standard library.
 
 ---
 
-## 🖥️ Using the CLI
+## Using the CLI
 
 ```bash
 # Connect scan + service/version detection on your own machine
@@ -141,7 +141,7 @@ Run `python cli.py --help` for the full list.
 
 ---
 
-## 🌐 Using the web console
+## Using the web console
 
 ```bash
 python app.py                   # open http://127.0.0.1:5000
@@ -159,7 +159,7 @@ python app.py                   # open http://127.0.0.1:5000
 
 ---
 
-## 💻 Platform support (read this)
+## Platform support (read this)
 
 | Capability | Linux (root / `CAP_NET_RAW`) | Windows |
 |---|:--:|:--:|
@@ -183,7 +183,7 @@ TTL/window-based OS detection, **run on Linux as root**.
 
 ---
 
-## 🔐 Authorization
+## Authorization
 
 The tool scans only loopback and private ranges by default. To scan anything
 else you must explicitly assert you're authorized:
@@ -196,7 +196,7 @@ This is friction by design: *"I only meant to scan my lab"* is the default.
 
 ---
 
-## 📄 Reports
+## Reports
 
 Every scan can be exported to **CSV, JSON, XML (Nmap-ish), Markdown or HTML**.
 All formats are generated locally and HTML/XML output is escaped, so a hostile
@@ -205,7 +205,7 @@ console use the download buttons.
 
 ---
 
-## 🧪 Testing
+## Testing
 
 ```bash
 pytest -q
@@ -217,7 +217,7 @@ signatures, CVE version matching, the authorization gate, and report escaping.
 
 ---
 
-## 🗂️ Project layout
+## Project layout
 
 ```
 scanner/              the engine (standalone; no Flask dependency)
@@ -240,7 +240,7 @@ tests/                offline pytest suite
 
 ---
 
-## 🐳 Docker
+## Docker
 
 ```bash
 docker compose up --build       # http://127.0.0.1:5000
@@ -251,7 +251,7 @@ only what you are authorized to.
 
 ---
 
-## 🧭 Roadmap
+## Roadmap
 
 - Idle / zombie scan (`-sI`) via the IP-ID side channel
 - IPv6 crafted-packet scans (IPv6 currently supported at the connect level)
@@ -260,7 +260,7 @@ only what you are authorized to.
 
 ---
 
-## ⚖️ Legal & ethics
+## Legal & ethics
 
 For education and **authorized** security testing only — use exclusively against
 systems and networks you own or have explicit written permission to assess. The
