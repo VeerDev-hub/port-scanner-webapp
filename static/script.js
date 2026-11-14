@@ -219,8 +219,11 @@ function renderResults() {
     const h = el("h3", host.host + (host.hostname ? ` (${host.hostname})` : ""));
     box.appendChild(h);
 
-    if (host.os && host.os.name && host.os.name !== "Unknown") {
-      box.appendChild(el("p", `OS: ${host.os.name} (${Math.round((host.os.confidence || 0) * 100)}%) ${host.os.details || ""}`));
+    if (host.os) {
+      const label = host.os.name && host.os.name !== "Unknown"
+        ? `OS: ${host.os.name} (${Math.round((host.os.confidence || 0) * 100)}%) — ${host.os.details || ""}`
+        : `OS: Unknown — ${host.os.details || "no signal"}`;
+      box.appendChild(el("p", label, "os-line"));
     }
 
     const ports = (host.ports || []).filter((p) => showAll || String(p.state).startsWith("open"));

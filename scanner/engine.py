@@ -230,7 +230,9 @@ class ScanEngine:
                 if self._cancel.is_set():
                     break
                 open_tcp = next((pt.port for pt in hr.open_ports() if pt.protocol == "tcp"), None)
-                hr.os = osfingerprint.fingerprint(hr.host, open_tcp, cfg.timeout)
+                hr.os = osfingerprint.fingerprint(hr.host, open_tcp, hr.ports, cfg.timeout)
+                if hr.os and hr.os.name != "Unknown":
+                    self._emit(EventType.LOG, f"{hr.host} OS guess: {hr.os.name} ({hr.os.confidence:.0%})")
 
         # 8) Sort ports for stable output and finish.
         for hr in host_results.values():
